@@ -12,6 +12,16 @@ class Models(Enum):
     EDM = 2
 
 
+class SamplingDirection(Enum):
+    NOISE_TO_DATA = 1
+    DATA_TO_NOISE = 2
+
+
+class SamplingMethod(Enum):
+    EULER = 1
+    HEUN = 2
+
+
 class Distiller(abc.ABC):
     def __init__(self):
         pass
@@ -75,13 +85,19 @@ class PretrainedFlowDistiller(Distiller, abc.ABC):
         device: torch.device | str,
         rng: torch.Generator,
         model: torch.nn.Module | None = None,
+        sampling_method: SamplingMethod = SamplingMethod.EULER
     ):
         if model is None:
             model = self.pretr_model
         model = model.to(device)
         model.eval()
         x0 = torch.randn(sample_size, generator=rng, device=device)
-        samples = euler_sampling(model, n_steps, x0=x0)
+        if sampling_method == SamplingMethod.EULER:
+            samples = euler_sampling(model, n_steps, x0=x0)
+        elif sampling_method == SamplingMethod.HEUN:
+            samples = heun_sampling(model, n_steps, x0=x0)
+        else:
+            raise ValueError(sampling_method)
         return samples
 
 
@@ -160,14 +176,19 @@ def euler_sampling(
     model: torch.nn.Module,
     n_steps: int,
     x0: Tensor,
+    direction: SamplingDirection = SamplingDirection.NOISE_TO_DATA,
 ) -> list[Tensor]:
     eps = 1e-3
     traj = [x0.cpu()]
     xt = x0
     dt = 1 / n_steps
     for i in range(n_steps):
-        t = i / n_steps * (1.0 - eps) + eps
-        velocity = model(xt, time_to_tensor(t, xt))
+        if direction == SamplingDirection.NOISE_TO_DATA:
+            t = i / n_steps * (1.0 - eps) + eps
+            velocity = model(xt, time_to_tensor(t, xt))
+        else:
+            t = 1 - i / n_steps * (1.0 - eps) + eps
+            velocity = - model(xt, time_to_tensor(t, xt))
         xt = xt + velocity * dt
         traj.append(xt.cpu())
     return traj
@@ -177,18 +198,24 @@ def euler_sampling(
 def heun_sampling(
     model: torch.nn.Module,
     n_steps: int,
-    x0: Tensor
+    x0: Tensor,
+    direction: SamplingDirection = SamplingDirection.NOISE_TO_DATA,
 ):
+    def run_model(x, t):
+        if direction == SamplingDirection.NOISE_TO_DATA:
+            return model(x, time_to_tensor(t, x))
+        else:
+            return -model(x, time_to_tensor(1 - t, x))
     t_steps = torch.linspace(0, 1, steps=n_steps + 1).tolist()
     traj = [x0]
     x_next = x0
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
         x_cur = x_next
-        d_cur = model(x_cur, time_to_tensor(t_cur, x_cur))
+        d_cur = run_model(x_cur, t_cur)
         x_next = x_cur + (t_next - t_cur) * d_cur
         # 2nd order correction
         if i < n_steps - 1:
-            d_prime = model(x_next, time_to_tensor(t_next, x_next))
+            d_prime = run_model(x_next, t_next)
             x_next = x_cur + (t_next - t_cur) * (0.5 * d_cur + 0.5 * d_prime)
         traj.append(x_next)
     return traj

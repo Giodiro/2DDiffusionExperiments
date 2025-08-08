@@ -20,3 +20,19 @@ class MixGauss:
     def get_dataloader(self):
         while True:
             yield self.sample()
+
+
+class Checkerboard:
+    def __init__(self, batch_size):
+        self.batch_size = batch_size
+
+    def sample(self):
+        x1 = torch.rand(self.batch_size) * 4 - 2
+        x1 = torch.sort(x1, descending=True).values
+        x2 = torch.rand(self.batch_size) - torch.randint(0, 2, (self.batch_size, )) * 2
+        x2 = x2 + (torch.floor(x1) % 2)
+        return torch.stack([x1, x2], dim=1)
+
+    def get_dataloader(self):
+        while True:
+            yield self.sample()
